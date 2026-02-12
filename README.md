@@ -12,6 +12,10 @@ Mailing list: https://dev.eclipse.org/mailman/listinfo/milo-dev
 
 ## Maven
 
+### Migration Guide
+
+**Migrating from version 0.6.7?** See [MIGRATION_0.6.7_to_1.1.1.md](MIGRATION_0.6.7_to_1.1.1.md) for detailed instructions.
+
 ### Building Milo
 
 **Using JDK 17**, run `mvn clean install` from the project root.
