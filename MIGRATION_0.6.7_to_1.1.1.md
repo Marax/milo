@@ -850,12 +850,30 @@ rm -rf ~/.m2/repository/org/eclipse/milo/opc-ua-stack
 mvn clean install
 ```
 
-**IDE (VS Code, IntelliJ, Eclipse):**
+**IDE Workspace Cleanup:**
+
 1. Run `mvn clean` first
-2. Close the IDE
-3. For VS Code: Reopen IDE and use Command Palette (F1) → "Java: Clean Java Language Server Workspace"
-4. For IntelliJ/Eclipse: Invalidate caches and restart
-5. Let the IDE re-index the project
+2. Close your IDE completely
+
+**For VS Code:**
+3. Reopen VS Code
+4. Open Command Palette (F1 or Ctrl/Cmd+Shift+P)
+5. Type and select "Java: Clean Java Language Server Workspace"
+6. Restart VS Code when prompted
+7. Let the IDE re-index the project
+
+**For IntelliJ IDEA:**
+3. Reopen IntelliJ
+4. Go to File → Invalidate Caches...
+5. Check all options and click "Invalidate and Restart"
+6. Let the IDE re-index the project
+
+**For Eclipse:**
+3. Reopen Eclipse
+4. Go to Project → Clean...
+5. Select "Clean all projects" and click "Clean"
+6. Restart Eclipse
+7. Let the IDE re-index the project
 
 ### Testing Dependencies
 
