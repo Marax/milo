@@ -262,13 +262,18 @@ DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
 
 **After (1.1.1):**
 ```java
-// Use blocking methods directly (can throw UaException)
-client.connect();
-Session session = client.getSession();
-client.disconnect();
-DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+// Use blocking methods directly (can throw UaException - wrap in try-catch if needed)
+try {
+    client.connect();
+    Session session = client.getSession();
+    DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+    // ... do work ...
+    client.disconnect();
+} catch (UaException e) {
+    // Handle exception
+}
 
-// Or use async variants when needed
+// Or use async variants when needed (exceptions in CompletableFuture)
 client.connectAsync().thenAccept(c -> {});
 client.getSessionAsync().thenAccept(s -> {});
 client.disconnectAsync().thenAccept(c -> {});
@@ -846,10 +851,11 @@ mvn clean install
 ```
 
 **IDE (VS Code, IntelliJ, Eclipse):**
-1. Close the IDE
-2. Run `mvn clean`
-3. For VS Code: Open Command Palette (F1) → "Java: Clean Java Language Server Workspace"
-4. Reopen IDE and let it re-index
+1. Run `mvn clean` first
+2. Close the IDE
+3. For VS Code: Reopen IDE and use Command Palette (F1) → "Java: Clean Java Language Server Workspace"
+4. For IntelliJ/Eclipse: Invalidate caches and restart
+5. Let the IDE re-index the project
 
 ### Testing Dependencies
 
@@ -1127,12 +1133,20 @@ This is especially important when upgrading from 0.6.x which allowed null status
 // Old - returned CompletableFuture
 client.getSubscriptionManager().createSubscription(1000.0).get();
 
-// New - blocking call (can throw UaException)
+// New - blocking call (wrap in try-catch for UaException)
 var subscription = new OpcUaSubscription(client, 1000.0);
-subscription.create(); // blocking
+try {
+    subscription.create(); // blocking, can throw UaException
+} catch (UaException e) {
+    // Handle exception
+}
 
-// Or use async
-subscription.createAsync(); // returns CompletableFuture<Void>
+// Or use async (exceptions in CompletableFuture)
+subscription.createAsync()
+    .exceptionally(ex -> {
+        // Handle exception
+        return null;
+    });
 ```
 
 #### 8. ExtensionObject Decode Issues
