@@ -1,0 +1,1435 @@
+# Migration Guide: Eclipse Milo 0.6.7 to 1.1.1
+
+This guide provides detailed instructions for migrating from Eclipse Milo version 0.6.7 to version 1.1.1.
+
+## Quick Reference
+
+### Most Critical Changes
+
+| Component | 0.6.7 | 1.1.1 |
+|-----------|-------|-------|
+| **Minimum Java** | Java 8 | **Java 17** |
+| **Client Import** | `org.eclipse.milo.opcua.sdk.client.api.OpcUaClient` | `org.eclipse.milo.opcua.sdk.client.OpcUaClient` |
+| **Server Import** | `org.eclipse.milo.opcua.sdk.server.api.*` | `org.eclipse.milo.opcua.sdk.server.*` |
+| **Subscription** | `UaSubscription` | `OpcUaSubscription` |
+| **Monitored Item** | `UaMonitoredItem` | `OpcUaMonitoredItem` |
+| **Data Type** | `BuiltinDataType` | `OpcUaDataType` |
+| **Context** | `AttributeContext` | `AccessContext` |
+| **AddressSpace** | Async API (`getNodeAsync()`) | Blocking API (`getNode()`) |
+
+### Essential Migration Steps
+
+1. **Upgrade to Java 17+**
+2. **Remove `.api` from imports**: `sdk.client.api` → `sdk.client`
+3. **Update subscriptions**: Use `OpcUaSubscription` and `OpcUaMonitoredItem`
+4. **Change `BuiltinDataType`** to `OpcUaDataType`
+5. **Update server AddressSpace calls** from async to blocking
+6. **Replace `AttributeContext`** with `AccessContext` in server code
+7. **Test thoroughly** - Many breaking changes in internal APIs
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Breaking Changes Summary](#breaking-changes-summary)
+3. [Version 1.0.0 Major Refactoring](#version-100-major-refactoring)
+4. [Client API Migration](#client-api-migration)
+5. [Server API Migration](#server-api-migration)
+6. [Data Type Changes](#data-type-changes)
+7. [Security and Certificates](#security-and-certificates)
+8. [Dependencies](#dependencies)
+9. [Code Examples](#code-examples)
+10. [Troubleshooting](#troubleshooting)
+
+---
+
+## Overview
+
+The migration from version 0.6.7 to 1.1.1 represents a **major upgrade** with significant architectural changes introduced primarily in version 1.0.0. This release includes:
+
+- **487 commits** with changes to over **3,509 files**
+- Support for **OPC UA 1.05** specification
+- Upgrade to **Java 17** (minimum requirement)
+- Major refactoring of client and server APIs
+- New JSON encoding support
+- Enhanced data type handling
+- Improved security and certificate management
+
+**Important**: This is a breaking change migration requiring code modifications.
+
+---
+
+## Breaking Changes Summary
+
+### Critical Breaking Changes
+
+1. **Java Version**: Minimum Java version upgraded from Java 8 to **Java 17**
+2. **Package Structure**: Major refactoring away from "api" packages
+3. **Client API**: Complete redesign of `OpcUaClient` API
+4. **Server API**: Changes to `AddressSpace`, `AttributeContext`, and node handling
+5. **Data Types**: `BuiltinDataType` renamed to `OpcUaDataType`
+6. **Lombok Removal**: All Lombok-generated code replaced with custom implementations
+7. **ExtensionObject**: Now a sealed class with new implementation
+8. **ExpandedNodeId**: Completely reimplemented
+9. **Subscription API**: New client subscription and monitored item API
+
+---
+
+## Version 1.0.0 Major Refactoring
+
+Version 1.0.0 introduced the most significant changes. Key refactorings include:
+
+### OPC UA 1.05 Support
+
+```xml
+<!-- Update your dependencies -->
+<dependency>
+    <groupId>org.eclipse.milo</groupId>
+    <artifactId>milo-sdk-client</artifactId>
+    <version>1.1.1</version>
+</dependency>
+```
+
+### Package Structure Changes
+
+The removal of "api" packages means imports need updating:
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.sdk.client.api.OpcUaClient;
+import org.eclipse.milo.opcua.sdk.server.api.AddressSpace;
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
+import org.eclipse.milo.opcua.sdk.server.AddressSpace;
+```
+
+### Transport and Stack Refactoring
+
+The stack and transport layers underwent major refactoring in PR [#1078](https://github.com/eclipse-milo/milo/pull/1078). This affects low-level usage but most high-level APIs remain similar.
+
+---
+
+## Client API Migration
+
+### 1. OpcUaClient Creation and Configuration
+
+The `OpcUaClient` API was refactored in PR [#1126](https://github.com/eclipse-milo/milo/pull/1126).
+
+**Before (0.6.7):**
+```java
+OpcUaClient client = OpcUaClient.create(
+    "opc.tcp://localhost:4840",
+    endpoints -> endpoints.stream()
+        .filter(e -> e.getSecurityPolicyUri().equals(SecurityPolicy.None.getUri()))
+        .findFirst(),
+    configBuilder -> configBuilder
+        .setApplicationName(LocalizedText.english("My Client"))
+        .setApplicationUri("urn:my:client")
+        .build()
+);
+```
+
+**After (1.1.1):**
+```java
+OpcUaClient client = OpcUaClient.create(
+    "opc.tcp://localhost:4840",
+    builder -> builder
+        .setApplicationName(LocalizedText.english("My Client"))
+        .setApplicationUri("urn:my:client")
+        .setEndpointFilter(endpoints -> endpoints.stream()
+            .filter(e -> e.getSecurityPolicyUri().equals(SecurityPolicy.None.getUri()))
+            .findFirst())
+        .build()
+);
+```
+
+### 2. Subscription API Changes
+
+Complete redesign of subscription and monitored item API in PR [#1223](https://github.com/eclipse-milo/milo/pull/1223).
+
+**Before (0.6.7):**
+```java
+UaSubscription subscription = client.getSubscriptionManager()
+    .createSubscription(1000.0)
+    .get();
+
+UaMonitoredItem item = subscription.createMonitoredItem(
+    new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE),
+    MonitoringMode.Reporting,
+    new MonitoringParameters(
+        uint(1),
+        1000.0,
+        null,
+        uint(10),
+        true
+    )
+).get();
+
+item.setValueConsumer(v -> {
+    System.out.println("Value: " + v.getValue().getValue());
+});
+```
+
+**After (1.1.1):**
+```java
+// Create subscription
+var subscription = new OpcUaSubscription(client);
+
+// Optional: Set subscription-level listener for batch notifications
+subscription.setSubscriptionListener(
+    new OpcUaSubscription.SubscriptionListener() {
+        @Override
+        public void onDataReceived(
+            OpcUaSubscription subscription,
+            List<OpcUaMonitoredItem> items,
+            List<DataValue> values) {
+            
+            for (int i = 0; i < items.size(); i++) {
+                System.out.println("Item: " + items.get(i).getReadValueId().getNodeId() 
+                    + ", Value: " + values.get(i).value());
+            }
+        }
+    }
+);
+
+// Create subscription on server
+subscription.create();
+
+// Create monitored item
+var monitoredItem = OpcUaMonitoredItem.newDataItem(nodeId);
+
+// Set item-level listener
+monitoredItem.setDataValueListener((item, value) -> 
+    System.out.println("Value: " + value.value())
+);
+
+// Add item to subscription
+subscription.addMonitoredItem(monitoredItem);
+
+// Synchronize with server
+try {
+    subscription.synchronizeMonitoredItems();
+} catch (MonitoredItemSynchronizationException e) {
+    e.getCreateResults().forEach(result ->
+        System.err.println("Failed: " + result.operationResult())
+    );
+}
+```
+
+### 3. DataTypeTree and Codec Registration
+
+New support for DataTypeTree and codec registration in PR [#1222](https://github.com/eclipse-milo/milo/pull/1222).
+
+**After (1.1.1):**
+```java
+// Register custom data types
+DataTypeTree dataTypeTree = DataTypeTreeBuilder.build(
+    client.getAddressSpace(),
+    client.getNamespaceTable()
+);
+
+client.getDynamicDataTypeManager().registerCodec(
+    new CustomStructCodec(dataTypeTree)
+);
+```
+
+### 4. Operation Limits Support
+
+New support for reading operation limits in PR [#1221](https://github.com/eclipse-milo/milo/pull/1221).
+
+**After (1.1.1):**
+```java
+OperationLimits operationLimits = client.getOperationLimits()
+    .orElse(OperationLimits.DEFAULT);
+
+int maxNodesPerRead = operationLimits.getMaxNodesPerRead();
+```
+
+### 5. Blocking vs Async Method Changes
+
+Many client methods that previously returned `CompletableFuture` now have both blocking and async variants.
+
+**Before (0.6.7):**
+```java
+// Methods returned CompletableFuture, requiring .get() for blocking behavior
+client.connect().get();
+client.getSession().get();
+client.disconnect().get();
+DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
+```
+
+**After (1.1.1):**
+```java
+// Use blocking methods directly (can throw UaException - wrap in try-catch if needed)
+try {
+    client.connect();
+    Session session = client.getSession();
+    DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+    // ... do work ...
+    client.disconnect();
+} catch (UaException e) {
+    // Handle exception
+}
+
+// Or use async variants when needed (exceptions in CompletableFuture)
+client.connectAsync().thenAccept(c -> {});
+client.getSessionAsync().thenAccept(s -> {});
+client.disconnectAsync().thenAccept(c -> {});
+client.readValuesAsync(List.of(nodeId)).thenAccept(values -> {});
+```
+
+**Important:** `readValue()` (singular) no longer returns a `CompletableFuture`. Use `readValuesAsync()` (plural) if you need async behavior:
+
+```java
+// 0.6.7 - async single read
+CompletableFuture<DataValue> future = client.readValue(...);
+
+// 1.1.1 - blocking single read
+DataValue value = client.readValue(...);
+
+// 1.1.1 - async multiple reads (use for single item too)
+CompletableFuture<List<DataValue>> future = 
+    client.readValuesAsync(List.of(nodeId));
+```
+
+### 6. Write Methods Changes
+
+**Before (0.6.7):**
+```java
+// Single write
+client.writeValue(nodeId, dataValue).get();
+```
+
+**After (1.1.1):**
+```java
+// writeValue() removed - use writeValues() or writeValuesAsync()
+List<StatusCode> results = client.writeValues(
+    List.of(nodeId), 
+    List.of(dataValue)
+);
+
+// Or async
+client.writeValuesAsync(List.of(nodeId), List.of(dataValue))
+    .thenAccept(results -> {});
+```
+
+**Critical:** Always use `DataValue.valueOnly(variant)` or ensure `StatusCode` is not null. A null `StatusCode` in `DataValue` will cause `NullPointerException` during encoding:
+
+```java
+// ❌ BAD - will throw NPE
+DataValue bad = new DataValue(variant, null, null);
+
+// ✅ GOOD - uses default StatusCode
+DataValue good = DataValue.valueOnly(variant);
+
+// ✅ GOOD - explicit StatusCode
+DataValue good = new DataValue(variant, StatusCode.GOOD, DateTime.now());
+```
+
+### 7. SerializationContext → EncodingContext
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.SerializationContext;
+
+SerializationContext context = client.getDynamicSerializationContext();
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.encoding.EncodingContext;
+
+EncodingContext context = client.getDynamicEncodingContext();
+```
+
+### 8. ValueConsumer → DataValueListener
+
+The callback interface for monitored items has changed.
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem.ValueConsumer;
+
+class MyConsumer implements ValueConsumer {
+    @Override
+    public void onValueArrived(UaMonitoredItem item, DataValue value) {
+        // Handle value
+    }
+}
+
+item.setValueConsumer(myConsumer);
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaMonitoredItem.DataValueListener;
+
+class MyListener implements DataValueListener {
+    @Override
+    public void onDataReceived(OpcUaMonitoredItem item, DataValue value) {
+        // Handle value
+    }
+}
+
+item.setDataValueListener(myListener);
+```
+
+### 9. Optional Return Types
+
+Some methods now return `Optional` instead of nullable values.
+
+**Before (0.6.7):**
+```java
+UInteger clientHandle = item.getClientHandle(); // could be null
+```
+
+**After (1.1.1):**
+```java
+Optional<UInteger> clientHandle = item.getClientHandle();
+
+// Use safely
+clientHandle.ifPresent(handle -> {});
+// or
+UInteger handle = clientHandle.orElse(UInteger.valueOf(0));
+```
+
+---
+
+## Server API Migration
+
+### 1. AddressSpace API Changes
+
+The `AddressSpace` was converted to a blocking API in PR [#1245](https://github.com/eclipse-milo/milo/pull/1245).
+
+**Before (0.6.7):**
+```java
+// Async API
+CompletableFuture<Optional<UaNode>> future = 
+    addressSpace.getNodeAsync(nodeId);
+```
+
+**After (1.1.1):**
+```java
+// Blocking API
+Optional<UaNode> node = addressSpace.getNode(nodeId);
+```
+
+### 2. Browse API Refactoring
+
+The Browse API was refactored in PR [#1246](https://github.com/eclipse-milo/milo/pull/1246).
+
+**After (1.1.1):**
+```java
+// Use ReferenceTypeTree for reference subtype checking
+ReferenceTypeTree referenceTypeTree = 
+    server.getAddressSpaceManager().getReferenceTypeTree();
+```
+
+### 3. AttributeContext Replaced with AccessContext
+
+In PR [#1160](https://github.com/eclipse-milo/milo/pull/1160), `AttributeContext` was replaced with `AccessContext`.
+
+**Before (0.6.7):**
+```java
+void onAttributeRead(
+    AttributeContext context,
+    AttributeId attributeId
+) {
+    // ...
+}
+```
+
+**After (1.1.1):**
+```java
+void onAttributeRead(
+    AccessContext context,
+    AttributeId attributeId
+) {
+    // ...
+}
+```
+
+### 4. AttributeDelegate Removal
+
+`AttributeDelegate` and related code was removed in PR [#1159](https://github.com/eclipse-milo/milo/pull/1159). Use `AttributeFilter` instead:
+
+**After (1.1.1):**
+```java
+AttributeFilter filter = new AttributeFilter() {
+    @Override
+    public Object readAttribute(
+        AccessContext context,
+        UaNode node,
+        AttributeId attributeId
+    ) {
+        // Custom read logic
+    }
+    
+    @Override
+    public void writeAttribute(
+        AccessContext context,
+        UaNode node,
+        AttributeId attributeId,
+        Object value
+    ) {
+        // Custom write logic
+    }
+};
+
+server.getAddressSpaceManager().addAttributeFilter(filter);
+```
+
+### 5. Identity and IdentityValidator Changes
+
+Major refactoring in PR [#1158](https://github.com/eclipse-milo/milo/pull/1158) introduced the `Identity` interface.
+
+**After (1.1.1):**
+```java
+IdentityValidator identityValidator = new IdentityValidator() {
+    @Override
+    public Object validateIdentity(
+        Session session,
+        Object tokenObject
+    ) throws UaException {
+        // Return Identity instance
+        if (tokenObject instanceof UserNameIdentityToken token) {
+            return new UsernameIdentity(
+                token.getUserName(),
+                token.getDecryptedPassword(session)
+            );
+        }
+        return AnonymousIdentity.INSTANCE;
+    }
+};
+```
+
+### 6. Roles and Permissions
+
+New support for Roles and Permissions added in PR [#1256](https://github.com/eclipse-milo/milo/pull/1256).
+
+**After (1.1.1):**
+```java
+// Set roles on identity
+UsernameIdentity identity = new UsernameIdentity(
+    username,
+    password,
+    Set.of(
+        WellKnownRole.AuthenticatedUser,
+        new Role("CustomRole")
+    )
+);
+
+// Check permissions on nodes
+node.setRolePermissions(new RolePermission[] {
+    new RolePermission(
+        WellKnownRole.AuthenticatedUser.getNodeId(),
+        PermissionType.Read.getValue()
+    )
+});
+```
+
+---
+
+## Data Type Changes
+
+### 1. BuiltinDataType Renamed to OpcUaDataType
+
+In PR [#1377](https://github.com/eclipse-milo/milo/pull/1377), `BuiltinDataType` was renamed.
+
+**Before (0.6.7):**
+```java
+BuiltinDataType dataType = BuiltinDataType.Int32;
+```
+
+**After (1.1.1):**
+```java
+OpcUaDataType dataType = OpcUaDataType.Int32;
+```
+
+### 2. Dynamic/Custom Data Types
+
+Major improvements to dynamic data type support in PR [#1374](https://github.com/eclipse-milo/milo/pull/1374).
+
+**After (1.1.1):**
+```java
+// Register custom structure type
+StructureDefinition structDef = new StructureDefinition(
+    /* ... */
+);
+
+DataTypeDefinition dataTypeDef = new DataTypeDefinition(
+    structDef
+);
+
+// Server will automatically handle encoding/decoding
+```
+
+### 3. ExtensionObject Changes
+
+`ExtensionObject` is now a sealed class in PR [#1387](https://github.com/eclipse-milo/milo/pull/1387).
+
+**After (1.1.1):**
+```java
+// Pattern matching with sealed ExtensionObject
+ExtensionObject xo = /* ... */;
+
+Object decoded = switch (xo) {
+    case ExtensionObject.Encoded encoded -> 
+        codec.decode(encoded.getEncodedBody());
+    case ExtensionObject.Decoded decoded -> 
+        decoded.getDecodedBody();
+};
+```
+
+### 4. Matrix Support for Multidimensional Arrays
+
+New Matrix container for multidimensional arrays in PR [#1052](https://github.com/eclipse-milo/milo/pull/1052).
+
+**After (1.1.1):**
+```java
+Matrix matrix = new Matrix(
+    new int[] {2, 3}, // dimensions
+    new Integer[] {1, 2, 3, 4, 5, 6} // elements
+);
+
+// Access elements
+Integer value = (Integer) matrix.get(0, 1);
+```
+
+### 5. JSON Encoding Support
+
+New JSON encoding implementation in PR [#1045](https://github.com/eclipse-milo/milo/pull/1045).
+
+**After (1.1.1):**
+```java
+// Add dependency
+<dependency>
+    <groupId>org.eclipse.milo</groupId>
+    <artifactId>milo-codec-json</artifactId>
+    <version>1.1.1</version>
+</dependency>
+
+// Use JSON codec
+JsonEncoder encoder = new JsonEncoder();
+encoder.encodeMessage(message);
+```
+
+### 6. UaStructure → UaStructuredType
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.UaStructure;
+
+public class MyStruct implements UaStructure {
+    // ...
+}
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.types.UaStructuredType;
+
+public class MyStruct implements UaStructuredType {
+    // ...
+}
+```
+
+### 7. Codec Package Changes
+
+Package locations for codec-related classes have changed.
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.codecs.GenericDataTypeCodec;
+import org.eclipse.milo.opcua.stack.core.serialization.UaDecoder;
+import org.eclipse.milo.opcua.stack.core.serialization.UaEncoder;
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.encoding.GenericDataTypeCodec;
+import org.eclipse.milo.opcua.stack.core.encoding.binary.OpcUaBinaryDecoder; // was UaDecoder
+import org.eclipse.milo.opcua.stack.core.encoding.binary.OpcUaBinaryEncoder; // was UaEncoder
+```
+
+**Important:** Custom codecs must now implement `getJsonEncodingId()`:
+
+```java
+public class MyCodec extends GenericDataTypeCodec<MyStruct> {
+    @Override
+    public NodeId getJsonEncodingId() {
+        return NodeId.NULL_VALUE; // or appropriate NodeId
+    }
+    
+    // ... other methods
+}
+```
+
+---
+
+## Security and Certificates
+
+### 1. Certificate Management Refactoring
+
+Major refactoring to support Certificate Groups in PR [#1154](https://github.com/eclipse-milo/milo/pull/1154).
+
+**After (1.1.1):**
+```java
+CertificateManager certificateManager = new DefaultCertificateManager(
+    keyPair,
+    certificate,
+    certificateChain,
+    applicationCertificateValidator,
+    trustedCertificateValidator
+);
+
+// Support for multiple certificate groups
+CertificateGroup defaultApplicationGroup = 
+    certificateManager.getDefaultApplicationGroup();
+```
+
+### 2. CertificateValidator Interface
+
+Common `CertificateValidator` interface introduced in PR [#1317](https://github.com/eclipse-milo/milo/pull/1317).
+
+**After (1.1.1):**
+```java
+CertificateValidator validator = new CertificateValidator() {
+    @Override
+    public void validateCertificateChain(
+        List<X509Certificate> certificateChain
+    ) throws UaException {
+        // Custom validation logic
+    }
+    
+    @Override
+    public void validateCertificateChain(
+        List<X509Certificate> certificateChain,
+        String applicationUri,
+        String... validHostNames
+    ) throws UaException {
+        // Custom validation with URI and hostnames
+    }
+};
+```
+
+### 3. X.509 Extensions in CSR
+
+Support for X.509 extensions in CSR generation added in PR [#1651](https://github.com/eclipse-milo/milo/pull/1651).
+
+**After (1.1.1):**
+```java
+// Generate CSR with extensions
+PKCS10CertificationRequest csr = CertificateBuilder
+    .generateCSR(
+        keyPair,
+        subjectName,
+        sanUri,
+        sanDns
+    );
+```
+
+### 4. Password Security
+
+Passwords can now be supplied via `Supplier<byte[]>` for better security in PR [#1597](https://github.com/eclipse-milo/milo/pull/1597) and PR [#1617](https://github.com/eclipse-milo/milo/pull/1617).
+
+**After (1.1.1):**
+```java
+// Password from supplier
+client.getConfig().getIdentityProvider()
+    .setPassword(() -> getPasswordFromSecureSource());
+
+// X.509 identity from supplier
+X509IdentityProvider identityProvider = 
+    new X509IdentityProvider(
+        () -> certificate,
+        () -> privateKey
+    );
+```
+
+---
+
+## Dependencies
+
+### Artifact Name Changes
+
+**Critical:** Maven artifact names have changed from 0.6.x to 1.x:
+
+**Before (0.6.7):**
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>sdk-client</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>stack-core</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>stack-client</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+</dependencies>
+```
+
+**After (1.1.1):**
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-sdk-client</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-stack-core</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <!-- Note: stack-client has been removed -->
+</dependencies>
+```
+
+**Note:** `stack-client` artifact no longer exists in 1.x. Use `milo-sdk-client` instead.
+
+### Required Updates
+
+**Before (0.6.7):**
+- Java 8+
+- Netty 4.1.x (older version)
+- Guava (older version)
+
+**After (1.1.1):**
+- **Java 17+** (Required)
+- Netty 4.1.105.Final
+- Guava 32.1.3-jre
+- JSpecify annotations
+- Removed: Lombok (replaced with custom generated code)
+
+### Maven Configuration
+
+```xml
+<properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+</properties>
+
+<dependencies>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-sdk-client</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-sdk-server</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+</dependencies>
+```
+
+### Clean Workspace After Dependency Changes
+
+After updating dependencies, clean your workspace to avoid classpath conflicts:
+
+**Maven:**
+```bash
+# Remove old artifacts
+rm -rf ~/.m2/repository/org/eclipse/milo/sdk-client
+rm -rf ~/.m2/repository/org/eclipse/milo/stack-client
+rm -rf ~/.m2/repository/org/eclipse/milo/stack-core
+rm -rf ~/.m2/repository/org/eclipse/milo/opc-ua-sdk
+rm -rf ~/.m2/repository/org/eclipse/milo/opc-ua-stack
+
+# Clean and rebuild
+mvn clean install
+```
+
+**IDE Workspace Cleanup:**
+
+1. Run `mvn clean` first
+2. Close your IDE completely
+
+**Then, depending on your IDE:**
+
+**For VS Code:**
+- Reopen VS Code
+- Open Command Palette (F1 or Ctrl/Cmd+Shift+P)
+- Type and select "Java: Clean Java Language Server Workspace"
+- Restart VS Code when prompted
+- Let the IDE re-index the project
+
+**For IntelliJ IDEA:**
+- Reopen IntelliJ
+- Go to File → Invalidate Caches...
+- Check all options and click "Invalidate and Restart"
+- Let the IDE re-index the project
+
+**For Eclipse:**
+- Reopen Eclipse
+- Go to Project → Clean...
+- Select "Clean all projects" and click "Clean"
+- Restart Eclipse
+- Let the IDE re-index the project
+
+### Testing Dependencies
+
+Migration to JUnit 5 in PR [#1358](https://github.com/eclipse-milo/milo/pull/1358).
+
+**Before (0.6.7):**
+```xml
+<dependency>
+    <groupId>junit</groupId>
+    <artifactId>junit</artifactId>
+    <version>4.x</version>
+    <scope>test</scope>
+</dependency>
+```
+
+**After (1.1.1):**
+```xml
+<dependency>
+    <groupId>org.junit.jupiter</groupId>
+    <artifactId>junit-jupiter</artifactId>
+    <version>5.x</version>
+    <scope>test</scope>
+</dependency>
+```
+
+---
+
+## Code Examples
+
+### Complete Client Example
+
+**0.6.7 Style:**
+```java
+import org.eclipse.milo.opcua.sdk.client.api.OpcUaClient;
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
+import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
+import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
+
+public class OldClientExample {
+    public static void main(String[] args) throws Exception {
+        OpcUaClient client = OpcUaClient.create(
+            "opc.tcp://localhost:4840",
+            endpoints -> endpoints.stream().findFirst(),
+            configBuilder -> configBuilder
+                .setApplicationName(LocalizedText.english("My Client"))
+                .build()
+        );
+        
+        client.connect().get();
+        
+        NodeId nodeId = new NodeId(2, "MyVariable");
+        DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
+        
+        UaSubscription subscription = client.getSubscriptionManager()
+            .createSubscription(1000.0).get();
+            
+        client.disconnect().get();
+    }
+}
+```
+
+**1.1.1 Style:**
+```java
+import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
+import org.eclipse.milo.opcua.sdk.client.identity.AnonymousProvider;
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaMonitoredItem;
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaSubscription;
+import org.eclipse.milo.opcua.stack.core.NodeIds;
+import org.eclipse.milo.opcua.stack.core.security.SecurityPolicy;
+import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
+import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
+
+public class NewClientExample {
+    public static void main(String[] args) throws Exception {
+        // Create client
+        OpcUaClient client = OpcUaClient.create(
+            "opc.tcp://localhost:12686/milo",
+            builder -> builder
+                .setApplicationName(LocalizedText.english("My Client"))
+                .setApplicationUri("urn:my:client")
+                .setIdentityProvider(new AnonymousProvider())
+                .setEndpointFilter(e -> 
+                    SecurityPolicy.Basic256Sha256.getUri()
+                        .equals(e.getSecurityPolicyUri()))
+                .build()
+        );
+        
+        // Connect
+        client.connect();
+        
+        // Read value
+        NodeId nodeId = NodeIds.Server_ServerStatus_CurrentTime;
+        DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+        System.out.println("Value: " + value.value());
+        
+        // Create subscription
+        var subscription = new OpcUaSubscription(client);
+        subscription.create();
+        
+        // Create monitored item
+        var monitoredItem = OpcUaMonitoredItem.newDataItem(nodeId);
+        monitoredItem.setDataValueListener((item, dataValue) -> 
+            System.out.println("Value changed: " + dataValue.value())
+        );
+        
+        // Add and synchronize
+        subscription.addMonitoredItem(monitoredItem);
+        subscription.synchronizeMonitoredItems();
+        
+        // Keep running
+        Thread.sleep(5000);
+        
+        // Cleanup
+        subscription.delete();
+        client.disconnect();
+    }
+}
+```
+
+### Complete Server Example
+
+**0.6.7 Style:**
+```java
+import org.eclipse.milo.opcua.sdk.server.OpcUaServer;
+import org.eclipse.milo.opcua.sdk.server.api.config.OpcUaServerConfig;
+
+public class OldServerExample {
+    public static void main(String[] args) throws Exception {
+        OpcUaServerConfig config = OpcUaServerConfig.builder()
+            .setApplicationName(LocalizedText.english("My Server"))
+            .setApplicationUri("urn:my:server")
+            .build();
+            
+        OpcUaServer server = new OpcUaServer(config);
+        server.startup().get();
+    }
+}
+```
+
+**1.1.1 Style:**
+```java
+import org.eclipse.milo.opcua.sdk.server.OpcUaServer;
+import org.eclipse.milo.opcua.sdk.server.OpcUaServerConfig;
+import org.eclipse.milo.opcua.sdk.server.identity.AnonymousIdentityValidator;
+import org.eclipse.milo.opcua.sdk.server.identity.CompositeValidator;
+import org.eclipse.milo.opcua.sdk.server.identity.UsernameIdentityValidator;
+import org.eclipse.milo.opcua.stack.core.security.DefaultApplicationGroup;
+import org.eclipse.milo.opcua.stack.core.security.DefaultCertificateManager;
+import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
+
+public class NewServerExample {
+    public static void main(String[] args) throws Exception {
+        // Set up certificate management (required in 1.1.1)
+        var certificateManager = new DefaultCertificateManager(
+            certificateQuarantine,
+            defaultApplicationGroup
+        );
+        
+        // Set up identity validation with multiple validators
+        var identityValidator = new CompositeValidator(
+            new AnonymousIdentityValidator(),
+            new UsernameIdentityValidator(authChallenge -> {
+                String username = authChallenge.getUsername();
+                String password = authChallenge.getPassword();
+                return "user".equals(username) && "password".equals(password);
+            })
+        );
+        
+        // Build server configuration
+        OpcUaServerConfig config = OpcUaServerConfig.builder()
+            .setApplicationName(LocalizedText.english("My Server"))
+            .setApplicationUri("urn:my:server")
+            .setCertificateManager(certificateManager)
+            .setIdentityValidator(identityValidator)
+            .setProductUri("urn:my:server:product")
+            .build();
+            
+        OpcUaServer server = new OpcUaServer(config);
+        server.startup();
+        
+        // Server is now running
+    }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Common Migration Issues
+
+#### 1. "ClassNotFoundException" or "NoClassDefFoundError"
+
+**Problem:** Classes moved or renamed during refactoring.
+
+**Solution:** Update imports to remove "api" from package paths:
+```java
+// Old
+import org.eclipse.milo.opcua.sdk.client.api.*;
+
+// New
+import org.eclipse.milo.opcua.sdk.client.*;
+```
+
+#### 2. "MethodNotFoundException" with Subscriptions
+
+**Problem:** Subscription API completely redesigned.
+
+**Solution:** Use `OpcUaSubscription` and `OpcUaMonitoredItem` instead of `UaSubscription` and `UaMonitoredItem`. Also remember to call `subscription.create()` and `subscription.synchronizeMonitoredItems()`.
+
+#### 3. Java Version Incompatibility
+
+**Problem:** Code won't compile with Java 8/11.
+
+**Solution:** Upgrade to Java 17 or later:
+```xml
+<maven.compiler.source>17</maven.compiler.source>
+<maven.compiler.target>17</maven.compiler.target>
+```
+
+#### 4. AddressSpace Async Methods Missing
+
+**Problem:** `getNodeAsync()` and similar async methods no longer exist.
+
+**Solution:** Use blocking methods or wrap in `CompletableFuture.supplyAsync()`:
+```java
+// Old
+CompletableFuture<Optional<UaNode>> future = addressSpace.getNodeAsync(nodeId);
+
+// New - direct blocking
+Optional<UaNode> node = addressSpace.getNode(nodeId);
+
+// New - if async needed
+CompletableFuture<Optional<UaNode>> future = 
+    CompletableFuture.supplyAsync(() -> addressSpace.getNode(nodeId));
+```
+
+#### 5. BuiltinDataType Compilation Errors
+
+**Problem:** `BuiltinDataType` class not found.
+
+**Solution:** Replace with `OpcUaDataType`:
+```java
+// Old
+BuiltinDataType.Int32
+
+// New
+OpcUaDataType.Int32
+```
+
+#### 6. NullPointerException on Write Operations
+
+**Problem:** `NullPointerException: Cannot invoke "StatusCode.getValue()" because the return value of "DataValue.getStatusCode()" is null`
+
+**Solution:** Never create `DataValue` with null `StatusCode`. Use `DataValue.valueOnly()`:
+```java
+// ❌ BAD - will cause NPE during encoding
+DataValue bad = new DataValue(variant, null, null);
+
+// ✅ GOOD - uses StatusCode.GOOD by default
+DataValue good = DataValue.valueOnly(variant);
+
+// ✅ GOOD - explicit status code
+DataValue good = new DataValue(variant, StatusCode.GOOD, DateTime.now());
+```
+
+This is especially important when upgrading from 0.6.x which allowed null status codes.
+
+#### 7. "getSubscriptionManager" Method Not Found
+
+**Problem:** `OpcUaClient.getSubscriptionManager()` no longer exists.
+
+**Solution:** Create `OpcUaSubscription` directly:
+```java
+// Old - returned CompletableFuture
+client.getSubscriptionManager().createSubscription(1000.0).get();
+
+// New - blocking call (wrap in try-catch for UaException)
+var subscription = new OpcUaSubscription(client, 1000.0);
+try {
+    subscription.create(); // blocking, can throw UaException
+} catch (UaException e) {
+    // Handle exception
+}
+
+// Or use async (exceptions in CompletableFuture)
+subscription.createAsync()
+    .exceptionally(ex -> {
+        // Handle exception
+        return null;
+    });
+```
+
+#### 8. ExtensionObject Decode Issues
+
+**Problem:** ExtensionObject handling changed to sealed class.
+
+**Solution:** Use pattern matching:
+```java
+Object decoded = switch (extensionObject) {
+    case ExtensionObject.Encoded encoded -> decode(encoded);
+    case ExtensionObject.Decoded decoded -> decoded.getDecodedBody();
+};
+```
+
+#### 9. AttributeContext Not Found
+
+**Problem:** `AttributeContext` removed from API.
+
+**Solution:** Replace with `AccessContext`:
+```java
+// Old
+void method(AttributeContext context) { }
+
+// New
+void method(AccessContext context) { }
+```
+
+#### 10. Maven Artifact Not Found
+
+**Problem:** `sdk-client` or `stack-client` artifacts not found.
+
+**Solution:** Update to new artifact names with `milo-` prefix:
+```xml
+<!-- Old -->
+<artifactId>sdk-client</artifactId>
+
+<!-- New -->
+<artifactId>milo-sdk-client</artifactId>
+```
+
+#### 11. UaStructure Not Found
+
+**Problem:** `UaStructure` class not found.
+
+**Solution:** Replace with `UaStructuredType`:
+```java
+// Old
+import org.eclipse.milo.opcua.stack.core.serialization.UaStructure;
+
+// New
+import org.eclipse.milo.opcua.stack.core.types.UaStructuredType;
+```
+
+#### 12. getDynamicSerializationContext Not Found
+
+**Problem:** Method `getDynamicSerializationContext()` not found.
+
+**Solution:** Replace with `getDynamicEncodingContext()`:
+```java
+// Old
+client.getDynamicSerializationContext()
+
+// New
+client.getDynamicEncodingContext()
+```
+
+### Debugging Tips
+
+1. **Enable Debug Logging:**
+```java
+System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
+```
+
+2. **Check DataType Encoding:**
+```java
+// Verify custom types are registered
+DataTypeManager manager = client.getDynamicDataTypeManager();
+Optional<DataTypeCodec> codec = manager.getCodec(typeId);
+```
+
+3. **Verify Security Configuration:**
+```java
+// Check certificate validity
+X509Certificate cert = /* load cert */;
+cert.checkValidity();
+```
+
+### Migration Checklist
+
+- [ ] Upgrade to Java 17 or later
+- [ ] Update Maven dependencies to 1.1.1
+- [ ] Update JUnit dependencies to JUnit 5 (if applicable)
+- [ ] Remove "api" from import statements
+- [ ] Replace `BuiltinDataType` with `OpcUaDataType`
+- [ ] Update client configuration builders
+- [ ] Migrate subscription code to new API
+- [ ] Replace `AttributeContext` with `AccessContext`
+- [ ] Update `IdentityValidator` implementations
+- [ ] Convert async AddressSpace calls to blocking
+- [ ] Update certificate management code
+- [ ] Test with new ExtensionObject sealed class
+- [ ] Review and update custom AttributeFilters
+- [ ] Verify all custom data types work correctly
+- [ ] Test security configurations
+- [ ] Run full test suite
+
+---
+
+## Migration Best Practices
+
+### Recommended Migration Strategy
+
+1. **Phase 1: Environment Preparation**
+   - Set up a test environment with Java 17+
+   - Create a feature branch for migration work
+   - Run baseline tests on 0.6.7 to document current behavior
+   - Review the full migration guide
+
+2. **Phase 2: Dependency Updates**
+   - Update Maven/Gradle configuration for Java 17
+   - Update Milo dependencies to 1.1.1
+   - Update related dependencies (Netty, Guava, etc.)
+   - Fix compilation errors related to imports
+
+3. **Phase 3: API Migration**
+   - Start with client code (usually simpler)
+   - Then migrate server code
+   - Address subscription API changes
+   - Update data type handling
+   - Fix AddressSpace async to blocking conversions
+
+4. **Phase 4: Testing**
+   - Run unit tests
+   - Run integration tests
+   - Perform manual testing of critical workflows
+   - Test security configurations
+   - Verify custom data types
+   - Load test if applicable
+
+5. **Phase 5: Deployment**
+   - Deploy to staging environment
+   - Monitor for runtime issues
+   - Gradually roll out to production
+   - Keep rollback plan ready
+
+### Testing Your Migration
+
+#### Unit Test Updates
+
+If using JUnit 4, migrate to JUnit 5:
+
+**Before (JUnit 4):**
+```java
+import org.junit.Test;
+import org.junit.Before;
+import static org.junit.Assert.*;
+
+public class MyTest {
+    @Before
+    public void setUp() {
+        // setup
+    }
+    
+    @Test
+    public void testSomething() {
+        assertEquals(expected, actual);
+    }
+}
+```
+
+**After (JUnit 5):**
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import static org.junit.jupiter.api.Assertions.*;
+
+class MyTest {
+    @BeforeEach
+    void setUp() {
+        // setup
+    }
+    
+    @Test
+    void testSomething() {
+        assertEquals(expected, actual);
+    }
+}
+```
+
+#### Integration Test Recommendations
+
+1. **Test client connections** with various security policies
+2. **Test subscription operations** including create, modify, delete
+3. **Test data type encoding/decoding** for custom types
+4. **Test certificate validation** with valid and invalid certificates
+5. **Test concurrent operations** to verify thread safety
+6. **Test error handling** for various failure scenarios
+7. **Test memory usage** for subscription-heavy workloads
+
+### Common Pitfalls to Avoid
+
+1. **Don't assume async patterns still work** - AddressSpace is now blocking
+2. **Don't skip testing certificate management** - Major changes in this area
+3. **Don't forget to call `subscription.create()`** before adding items
+4. **Don't forget to call `subscription.synchronizeMonitoredItems()`** after adding items
+5. **Don't ignore `MonitoredItemSynchronizationException`** - provides detailed error info
+6. **Don't mix 0.6.7 and 1.1.1 patterns** - migrate completely
+7. **Don't use deprecated APIs** - They may be removed in future versions
+
+### Performance Considerations
+
+The migration may affect performance in the following ways:
+
+**Improvements:**
+- Better subscription performance with O(1) monitored item lookup
+- More efficient DataType tree loading (lazy loading)
+- Improved publishing manager with better async handling
+- Optimized address space routing with `SimpleAddressSpaceComposite`
+
+**Potential Regressions:**
+- AddressSpace blocking API may need careful async wrapping in some cases
+- ExtensionObject decoding overhead with sealed class pattern matching
+
+### Backwards Compatibility Notes
+
+**Not Backwards Compatible:**
+- Binary incompatible with 0.6.7 - full recompile required
+- API incompatible - source code changes required
+- Different Java version requirement (8 → 17)
+
+**Upgrade Path:**
+- No incremental migration path available
+- Must migrate from 0.6.7 directly to 1.1.1
+- Consider migrating to 1.0.0 first if you need intermediate steps
+
+---
+
+## Additional Resources
+
+- **Official Repository:** https://github.com/eclipse-milo/milo
+- **Version 1.1.1 Release Notes:** https://github.com/eclipse-milo/milo/releases/tag/v1.1.1
+- **Version 1.0.0 Release Notes:** https://github.com/eclipse-milo/milo/releases/tag/v1.0.0
+- **Stack Overflow Tag:** [milo](http://stackoverflow.com/questions/tagged/milo)
+- **Mailing List:** https://dev.eclipse.org/mailman/listinfo/milo-dev
+- **Example Code:** https://github.com/eclipse-milo/milo/tree/main/milo-examples
+
+---
+
+## Summary
+
+The migration from 0.6.7 to 1.1.1 is a significant undertaking that requires:
+
+1. **Java 17 upgrade** - Non-negotiable requirement
+2. **Import statement updates** - Remove "api" packages
+3. **API refactoring** - Especially for client subscriptions and server address space
+4. **Data type changes** - Rename and new implementations
+5. **Security updates** - New certificate management patterns
+6. **Testing** - Comprehensive testing of all OPC UA operations
+
+Plan for adequate testing time and consider a phased migration approach if possible. The changes bring significant improvements in OPC UA 1.05 support, security, and data type handling that make the migration worthwhile.
+
+---
+
+**Document Version:** 1.0  
+**Last Updated:** 2026-02-12  
+**Milo Versions Covered:** 0.6.7 → 1.1.1
