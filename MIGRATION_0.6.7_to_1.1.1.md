@@ -797,7 +797,7 @@ import org.eclipse.milo.opcua.sdk.client.*;
 
 **Problem:** Subscription API completely redesigned.
 
-**Solution:** Use `ManagedSubscription` and `ManagedDataItem` instead of `UaSubscription` and `UaMonitoredItem`.
+**Solution:** Use `OpcUaSubscription` and `OpcUaMonitoredItem` instead of `UaSubscription` and `UaMonitoredItem`. Also remember to call `subscription.create()` and `subscription.synchronizeMonitoredItems()`.
 
 #### 3. Java Version Incompatibility
 
