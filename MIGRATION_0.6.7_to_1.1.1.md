@@ -247,6 +247,149 @@ OperationLimits operationLimits = client.getOperationLimits()
 int maxNodesPerRead = operationLimits.getMaxNodesPerRead();
 ```
 
+### 5. Blocking vs Async Method Changes
+
+Many client methods that previously returned `CompletableFuture` now have both blocking and async variants.
+
+**Before (0.6.7):**
+```java
+// Everything was async
+client.connect().get();
+client.getSession().get();
+client.disconnect().get();
+DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
+```
+
+**After (1.1.1):**
+```java
+// Use blocking methods directly
+client.connect();
+Session session = client.getSession();
+client.disconnect();
+DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+
+// Or use async variants when needed
+client.connectAsync().thenAccept(c -> {});
+client.getSessionAsync().thenAccept(s -> {});
+client.disconnectAsync().thenAccept(c -> {});
+client.readValuesAsync(List.of(nodeId)).thenAccept(values -> {});
+```
+
+**Important:** `readValue()` (singular) no longer returns a `CompletableFuture`. Use `readValuesAsync()` (plural) if you need async behavior:
+
+```java
+// 0.6.7 - async single read
+CompletableFuture<DataValue> future = client.readValue(...);
+
+// 1.1.1 - blocking single read
+DataValue value = client.readValue(...);
+
+// 1.1.1 - async multiple reads (use for single item too)
+CompletableFuture<List<DataValue>> future = 
+    client.readValuesAsync(List.of(nodeId));
+```
+
+### 6. Write Methods Changes
+
+**Before (0.6.7):**
+```java
+// Single write
+client.writeValue(nodeId, dataValue).get();
+```
+
+**After (1.1.1):**
+```java
+// writeValue() removed - use writeValues() or writeValuesAsync()
+List<StatusCode> results = client.writeValues(
+    List.of(nodeId), 
+    List.of(dataValue)
+);
+
+// Or async
+client.writeValuesAsync(List.of(nodeId), List.of(dataValue))
+    .thenAccept(results -> {});
+```
+
+**Critical:** Always use `DataValue.valueOnly(variant)` or ensure `StatusCode` is not null. A null `StatusCode` in `DataValue` will cause `NullPointerException` during encoding:
+
+```java
+// ❌ BAD - will throw NPE
+DataValue bad = new DataValue(variant, null, null);
+
+// ✅ GOOD - uses default StatusCode
+DataValue good = DataValue.valueOnly(variant);
+
+// ✅ GOOD - explicit StatusCode
+DataValue good = new DataValue(variant, StatusCode.GOOD, DateTime.now());
+```
+
+### 7. SerializationContext → EncodingContext
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.SerializationContext;
+
+SerializationContext context = client.getDynamicSerializationContext();
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.encoding.EncodingContext;
+
+EncodingContext context = client.getDynamicEncodingContext();
+```
+
+### 8. ValueConsumer → DataValueListener
+
+The callback interface for monitored items has changed.
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem.ValueConsumer;
+
+class MyConsumer implements ValueConsumer {
+    @Override
+    public void onValueArrived(UaMonitoredItem item, DataValue value) {
+        // Handle value
+    }
+}
+
+item.setValueConsumer(myConsumer);
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaMonitoredItem.DataValueListener;
+
+class MyListener implements DataValueListener {
+    @Override
+    public void onDataReceived(OpcUaMonitoredItem item, DataValue value) {
+        // Handle value
+    }
+}
+
+item.setDataValueListener(myListener);
+```
+
+### 9. Optional Return Types
+
+Some methods now return `Optional` instead of nullable values.
+
+**Before (0.6.7):**
+```java
+UInteger clientHandle = item.getClientHandle(); // could be null
+```
+
+**After (1.1.1):**
+```java
+Optional<UInteger> clientHandle = item.getClientHandle();
+
+// Use safely
+clientHandle.ifPresent(handle -> {});
+// or
+UInteger handle = clientHandle.orElse(UInteger.valueOf(0));
+```
+
 ---
 
 ## Server API Migration
@@ -468,6 +611,57 @@ JsonEncoder encoder = new JsonEncoder();
 encoder.encodeMessage(message);
 ```
 
+### 6. UaStructure → UaStructuredType
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.UaStructure;
+
+public class MyStruct implements UaStructure {
+    // ...
+}
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.types.UaStructuredType;
+
+public class MyStruct implements UaStructuredType {
+    // ...
+}
+```
+
+### 7. Codec Package Changes
+
+Package locations for codec-related classes have changed.
+
+**Before (0.6.7):**
+```java
+import org.eclipse.milo.opcua.stack.core.serialization.codecs.GenericDataTypeCodec;
+import org.eclipse.milo.opcua.stack.core.serialization.UaDecoder;
+import org.eclipse.milo.opcua.stack.core.serialization.UaEncoder;
+```
+
+**After (1.1.1):**
+```java
+import org.eclipse.milo.opcua.stack.core.encoding.GenericDataTypeCodec;
+import org.eclipse.milo.opcua.stack.core.encoding.binary.OpcUaBinaryDecoder; // was UaDecoder
+import org.eclipse.milo.opcua.stack.core.encoding.binary.OpcUaBinaryEncoder; // was UaEncoder
+```
+
+**Important:** Custom codecs must now implement `getJsonEncodingId()`:
+
+```java
+public class MyCodec extends GenericDataTypeCodec<MyStruct> {
+    @Override
+    public NodeId getJsonEncodingId() {
+        return NodeId.NULL_VALUE; // or appropriate NodeId
+    }
+    
+    // ... other methods
+}
+```
+
 ---
 
 ## Security and Certificates
@@ -554,6 +748,50 @@ X509IdentityProvider identityProvider =
 
 ## Dependencies
 
+### Artifact Name Changes
+
+**Critical:** Maven artifact names have changed from 0.6.x to 1.x:
+
+**Before (0.6.7):**
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>sdk-client</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>stack-core</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>stack-client</artifactId>
+        <version>0.6.7</version>
+    </dependency>
+</dependencies>
+```
+
+**After (1.1.1):**
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-sdk-client</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <dependency>
+        <groupId>org.eclipse.milo</groupId>
+        <artifactId>milo-stack-core</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <!-- Note: stack-client has been removed -->
+</dependencies>
+```
+
+**Note:** `stack-client` artifact no longer exists in 1.x. Use `milo-sdk-client` instead.
+
 ### Required Updates
 
 **Before (0.6.7):**
@@ -589,6 +827,29 @@ X509IdentityProvider identityProvider =
     </dependency>
 </dependencies>
 ```
+
+### Clean Workspace After Dependency Changes
+
+After updating dependencies, clean your workspace to avoid classpath conflicts:
+
+**Maven:**
+```bash
+# Remove old artifacts
+rm -rf ~/.m2/repository/org/eclipse/milo/sdk-client
+rm -rf ~/.m2/repository/org/eclipse/milo/stack-client
+rm -rf ~/.m2/repository/org/eclipse/milo/stack-core
+rm -rf ~/.m2/repository/org/eclipse/milo/opc-ua-sdk
+rm -rf ~/.m2/repository/org/eclipse/milo/opc-ua-stack
+
+# Clean and rebuild
+mvn clean install
+```
+
+**IDE (VS Code, IntelliJ, Eclipse):**
+1. Close the IDE
+2. Run `mvn clean`
+3. For VS Code: Open Command Palette (F1) → "Java: Clean Java Language Server Workspace"
+4. Reopen IDE and let it re-index
 
 ### Testing Dependencies
 
@@ -839,7 +1100,39 @@ BuiltinDataType.Int32
 OpcUaDataType.Int32
 ```
 
-#### 6. ExtensionObject Decode Issues
+#### 6. NullPointerException on Write Operations
+
+**Problem:** `NullPointerException: Cannot invoke "StatusCode.getValue()" because the return value of "DataValue.getStatusCode()" is null`
+
+**Solution:** Never create `DataValue` with null `StatusCode`. Use `DataValue.valueOnly()`:
+```java
+// ❌ BAD - will cause NPE during encoding
+DataValue bad = new DataValue(variant, null, null);
+
+// ✅ GOOD - uses StatusCode.GOOD by default
+DataValue good = DataValue.valueOnly(variant);
+
+// ✅ GOOD - explicit status code
+DataValue good = new DataValue(variant, StatusCode.GOOD, DateTime.now());
+```
+
+This is especially important when upgrading from 0.6.x which allowed null status codes.
+
+#### 7. "getSubscriptionManager" Method Not Found
+
+**Problem:** `OpcUaClient.getSubscriptionManager()` no longer exists.
+
+**Solution:** Create `OpcUaSubscription` directly:
+```java
+// Old
+client.getSubscriptionManager().createSubscription(1000.0).get();
+
+// New
+var subscription = new OpcUaSubscription(client, 1000.0);
+subscription.create(); // or createAsync()
+```
+
+#### 8. ExtensionObject Decode Issues
 
 **Problem:** ExtensionObject handling changed to sealed class.
 
@@ -851,7 +1144,7 @@ Object decoded = switch (extensionObject) {
 };
 ```
 
-#### 7. AttributeContext Not Found
+#### 9. AttributeContext Not Found
 
 **Problem:** `AttributeContext` removed from API.
 
@@ -862,6 +1155,45 @@ void method(AttributeContext context) { }
 
 // New
 void method(AccessContext context) { }
+```
+
+#### 10. Maven Artifact Not Found
+
+**Problem:** `sdk-client` or `stack-client` artifacts not found.
+
+**Solution:** Update to new artifact names with `milo-` prefix:
+```xml
+<!-- Old -->
+<artifactId>sdk-client</artifactId>
+
+<!-- New -->
+<artifactId>milo-sdk-client</artifactId>
+```
+
+#### 11. UaStructure Not Found
+
+**Problem:** `UaStructure` class not found.
+
+**Solution:** Replace with `UaStructuredType`:
+```java
+// Old
+import org.eclipse.milo.opcua.stack.core.serialization.UaStructure;
+
+// New
+import org.eclipse.milo.opcua.stack.core.types.UaStructuredType;
+```
+
+#### 12. getDynamicSerializationContext Not Found
+
+**Problem:** Method `getDynamicSerializationContext()` not found.
+
+**Solution:** Replace with `getDynamicEncodingContext()`:
+```java
+// Old
+client.getDynamicSerializationContext()
+
+// New
+client.getDynamicEncodingContext()
 ```
 
 ### Debugging Tips
