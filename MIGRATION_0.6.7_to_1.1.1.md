@@ -2,6 +2,31 @@
 
 This guide provides detailed instructions for migrating from Eclipse Milo version 0.6.7 to version 1.1.1.
 
+## Quick Reference
+
+### Most Critical Changes
+
+| Component | 0.6.7 | 1.1.1 |
+|-----------|-------|-------|
+| **Minimum Java** | Java 8 | **Java 17** |
+| **Client Import** | `org.eclipse.milo.opcua.sdk.client.api.OpcUaClient` | `org.eclipse.milo.opcua.sdk.client.OpcUaClient` |
+| **Server Import** | `org.eclipse.milo.opcua.sdk.server.api.*` | `org.eclipse.milo.opcua.sdk.server.*` |
+| **Subscription** | `UaSubscription` | `OpcUaSubscription` |
+| **Monitored Item** | `UaMonitoredItem` | `OpcUaMonitoredItem` |
+| **Data Type** | `BuiltinDataType` | `OpcUaDataType` |
+| **Context** | `AttributeContext` | `AccessContext` |
+| **AddressSpace** | Async API (`getNodeAsync()`) | Blocking API (`getNode()`) |
+
+### Essential Migration Steps
+
+1. **Upgrade to Java 17+**
+2. **Remove `.api` from imports**: `sdk.client.api` → `sdk.client`
+3. **Update subscriptions**: Use `OpcUaSubscription` and `OpcUaMonitoredItem`
+4. **Change `BuiltinDataType`** to `OpcUaDataType`
+5. **Update server AddressSpace calls** from async to blocking
+6. **Replace `AttributeContext`** with `AccessContext` in server code
+7. **Test thoroughly** - Many breaking changes in internal APIs
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -149,15 +174,48 @@ item.setValueConsumer(v -> {
 
 **After (1.1.1):**
 ```java
-ManagedSubscription subscription = client.getSubscriptionManager()
-    .createSubscription(1000.0)
-    .get();
+// Create subscription
+var subscription = new OpcUaSubscription(client);
 
-ManagedDataItem dataItem = subscription.createDataItem(nodeId);
+// Optional: Set subscription-level listener for batch notifications
+subscription.setSubscriptionListener(
+    new OpcUaSubscription.SubscriptionListener() {
+        @Override
+        public void onDataReceived(
+            OpcUaSubscription subscription,
+            List<OpcUaMonitoredItem> items,
+            List<DataValue> values) {
+            
+            for (int i = 0; i < items.size(); i++) {
+                System.out.println("Item: " + items.get(i).getReadValueId().getNodeId() 
+                    + ", Value: " + values.get(i).value());
+            }
+        }
+    }
+);
 
-dataItem.addDataValueListener(v -> {
-    System.out.println("Value: " + v.getValue().getValue());
-});
+// Create subscription on server
+subscription.create();
+
+// Create monitored item
+var monitoredItem = OpcUaMonitoredItem.newDataItem(nodeId);
+
+// Set item-level listener
+monitoredItem.setDataValueListener((item, value) -> 
+    System.out.println("Value: " + value.value())
+);
+
+// Add item to subscription
+subscription.addMonitoredItem(monitoredItem);
+
+// Synchronize with server
+try {
+    subscription.synchronizeMonitoredItems();
+} catch (MonitoredItemSynchronizationException e) {
+    e.getCreateResults().forEach(result ->
+        System.err.println("Failed: " + result.operationResult())
+    );
+}
 ```
 
 ### 3. DataTypeTree and Codec Registration
@@ -595,34 +653,57 @@ public class OldClientExample {
 **1.1.1 Style:**
 ```java
 import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
-import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedSubscription;
-import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedDataItem;
+import org.eclipse.milo.opcua.sdk.client.identity.AnonymousProvider;
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaMonitoredItem;
+import org.eclipse.milo.opcua.sdk.client.subscriptions.OpcUaSubscription;
+import org.eclipse.milo.opcua.stack.core.NodeIds;
+import org.eclipse.milo.opcua.stack.core.security.SecurityPolicy;
 import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
 
 public class NewClientExample {
     public static void main(String[] args) throws Exception {
+        // Create client
         OpcUaClient client = OpcUaClient.create(
-            "opc.tcp://localhost:4840",
+            "opc.tcp://localhost:12686/milo",
             builder -> builder
                 .setApplicationName(LocalizedText.english("My Client"))
+                .setApplicationUri("urn:my:client")
+                .setIdentityProvider(new AnonymousProvider())
+                .setEndpointFilter(e -> 
+                    SecurityPolicy.Basic256Sha256.getUri()
+                        .equals(e.getSecurityPolicyUri()))
                 .build()
         );
         
-        client.connect().get();
+        // Connect
+        client.connect();
         
-        NodeId nodeId = new NodeId(2, "MyVariable");
-        DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
+        // Read value
+        NodeId nodeId = NodeIds.Server_ServerStatus_CurrentTime;
+        DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId);
+        System.out.println("Value: " + value.value());
         
-        ManagedSubscription subscription = client.getSubscriptionManager()
-            .createSubscription(1000.0).get();
-            
-        ManagedDataItem dataItem = subscription.createDataItem(nodeId);
-        dataItem.addDataValueListener(v -> 
-            System.out.println("Value: " + v.getValue().getValue())
+        // Create subscription
+        var subscription = new OpcUaSubscription(client);
+        subscription.create();
+        
+        // Create monitored item
+        var monitoredItem = OpcUaMonitoredItem.newDataItem(nodeId);
+        monitoredItem.setDataValueListener((item, dataValue) -> 
+            System.out.println("Value changed: " + dataValue.value())
         );
         
-        client.disconnect().get();
+        // Add and synchronize
+        subscription.addMonitoredItem(monitoredItem);
+        subscription.synchronizeMonitoredItems();
+        
+        // Keep running
+        Thread.sleep(5000);
+        
+        // Cleanup
+        subscription.delete();
+        client.disconnect();
     }
 }
 ```
@@ -650,19 +731,45 @@ public class OldServerExample {
 **1.1.1 Style:**
 ```java
 import org.eclipse.milo.opcua.sdk.server.OpcUaServer;
-import org.eclipse.milo.opcua.sdk.server.api.config.OpcUaServerConfig;
+import org.eclipse.milo.opcua.sdk.server.OpcUaServerConfig;
 import org.eclipse.milo.opcua.sdk.server.identity.AnonymousIdentityValidator;
+import org.eclipse.milo.opcua.sdk.server.identity.CompositeValidator;
+import org.eclipse.milo.opcua.sdk.server.identity.UsernameIdentityValidator;
+import org.eclipse.milo.opcua.stack.core.security.DefaultApplicationGroup;
+import org.eclipse.milo.opcua.stack.core.security.DefaultCertificateManager;
+import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
 
 public class NewServerExample {
     public static void main(String[] args) throws Exception {
+        // Set up certificate management (required in 1.1.1)
+        var certificateManager = new DefaultCertificateManager(
+            certificateQuarantine,
+            defaultApplicationGroup
+        );
+        
+        // Set up identity validation with multiple validators
+        var identityValidator = new CompositeValidator(
+            new AnonymousIdentityValidator(),
+            new UsernameIdentityValidator(authChallenge -> {
+                String username = authChallenge.getUsername();
+                String password = authChallenge.getPassword();
+                return "user".equals(username) && "password".equals(password);
+            })
+        );
+        
+        // Build server configuration
         OpcUaServerConfig config = OpcUaServerConfig.builder()
             .setApplicationName(LocalizedText.english("My Server"))
             .setApplicationUri("urn:my:server")
-            .setIdentityValidator(new AnonymousIdentityValidator())
+            .setCertificateManager(certificateManager)
+            .setIdentityValidator(identityValidator)
+            .setProductUri("urn:my:server:product")
             .build();
             
         OpcUaServer server = new OpcUaServer(config);
-        server.startup().get();
+        server.startup();
+        
+        // Server is now running
     }
 }
 ```
@@ -796,6 +903,135 @@ cert.checkValidity();
 - [ ] Verify all custom data types work correctly
 - [ ] Test security configurations
 - [ ] Run full test suite
+
+---
+
+## Migration Best Practices
+
+### Recommended Migration Strategy
+
+1. **Phase 1: Environment Preparation**
+   - Set up a test environment with Java 17+
+   - Create a feature branch for migration work
+   - Run baseline tests on 0.6.7 to document current behavior
+   - Review the full migration guide
+
+2. **Phase 2: Dependency Updates**
+   - Update Maven/Gradle configuration for Java 17
+   - Update Milo dependencies to 1.1.1
+   - Update related dependencies (Netty, Guava, etc.)
+   - Fix compilation errors related to imports
+
+3. **Phase 3: API Migration**
+   - Start with client code (usually simpler)
+   - Then migrate server code
+   - Address subscription API changes
+   - Update data type handling
+   - Fix AddressSpace async to blocking conversions
+
+4. **Phase 4: Testing**
+   - Run unit tests
+   - Run integration tests
+   - Perform manual testing of critical workflows
+   - Test security configurations
+   - Verify custom data types
+   - Load test if applicable
+
+5. **Phase 5: Deployment**
+   - Deploy to staging environment
+   - Monitor for runtime issues
+   - Gradually roll out to production
+   - Keep rollback plan ready
+
+### Testing Your Migration
+
+#### Unit Test Updates
+
+If using JUnit 4, migrate to JUnit 5:
+
+**Before (JUnit 4):**
+```java
+import org.junit.Test;
+import org.junit.Before;
+import static org.junit.Assert.*;
+
+public class MyTest {
+    @Before
+    public void setUp() {
+        // setup
+    }
+    
+    @Test
+    public void testSomething() {
+        assertEquals(expected, actual);
+    }
+}
+```
+
+**After (JUnit 5):**
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import static org.junit.jupiter.api.Assertions.*;
+
+class MyTest {
+    @BeforeEach
+    void setUp() {
+        // setup
+    }
+    
+    @Test
+    void testSomething() {
+        assertEquals(expected, actual);
+    }
+}
+```
+
+#### Integration Test Recommendations
+
+1. **Test client connections** with various security policies
+2. **Test subscription operations** including create, modify, delete
+3. **Test data type encoding/decoding** for custom types
+4. **Test certificate validation** with valid and invalid certificates
+5. **Test concurrent operations** to verify thread safety
+6. **Test error handling** for various failure scenarios
+7. **Test memory usage** for subscription-heavy workloads
+
+### Common Pitfalls to Avoid
+
+1. **Don't assume async patterns still work** - AddressSpace is now blocking
+2. **Don't skip testing certificate management** - Major changes in this area
+3. **Don't forget to call `subscription.create()`** before adding items
+4. **Don't forget to call `subscription.synchronizeMonitoredItems()`** after adding items
+5. **Don't ignore `MonitoredItemSynchronizationException`** - provides detailed error info
+6. **Don't mix 0.6.7 and 1.1.1 patterns** - migrate completely
+7. **Don't use deprecated APIs** - They may be removed in future versions
+
+### Performance Considerations
+
+The migration may affect performance in the following ways:
+
+**Improvements:**
+- Better subscription performance with O(1) monitored item lookup
+- More efficient DataType tree loading (lazy loading)
+- Improved publishing manager with better async handling
+- Optimized address space routing with `SimpleAddressSpaceComposite`
+
+**Potential Regressions:**
+- AddressSpace blocking API may need careful async wrapping in some cases
+- ExtensionObject decoding overhead with sealed class pattern matching
+
+### Backwards Compatibility Notes
+
+**Not Backwards Compatible:**
+- Binary incompatible with 0.6.7 - full recompile required
+- API incompatible - source code changes required
+- Different Java version requirement (8 → 17)
+
+**Upgrade Path:**
+- No incremental migration path available
+- Must migrate from 0.6.7 directly to 1.1.1
+- Consider migrating to 1.0.0 first if you need intermediate steps
 
 ---
 
