@@ -855,25 +855,27 @@ mvn clean install
 1. Run `mvn clean` first
 2. Close your IDE completely
 
+**Then, depending on your IDE:**
+
 **For VS Code:**
-3. Reopen VS Code
-4. Open Command Palette (F1 or Ctrl/Cmd+Shift+P)
-5. Type and select "Java: Clean Java Language Server Workspace"
-6. Restart VS Code when prompted
-7. Let the IDE re-index the project
+- Reopen VS Code
+- Open Command Palette (F1 or Ctrl/Cmd+Shift+P)
+- Type and select "Java: Clean Java Language Server Workspace"
+- Restart VS Code when prompted
+- Let the IDE re-index the project
 
 **For IntelliJ IDEA:**
-3. Reopen IntelliJ
-4. Go to File → Invalidate Caches...
-5. Check all options and click "Invalidate and Restart"
-6. Let the IDE re-index the project
+- Reopen IntelliJ
+- Go to File → Invalidate Caches...
+- Check all options and click "Invalidate and Restart"
+- Let the IDE re-index the project
 
 **For Eclipse:**
-3. Reopen Eclipse
-4. Go to Project → Clean...
-5. Select "Clean all projects" and click "Clean"
-6. Restart Eclipse
-7. Let the IDE re-index the project
+- Reopen Eclipse
+- Go to Project → Clean...
+- Select "Clean all projects" and click "Clean"
+- Restart Eclipse
+- Let the IDE re-index the project
 
 ### Testing Dependencies
 
