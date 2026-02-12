@@ -253,7 +253,7 @@ Many client methods that previously returned `CompletableFuture` now have both b
 
 **Before (0.6.7):**
 ```java
-// Everything was async
+// Methods returned CompletableFuture, requiring .get() for blocking behavior
 client.connect().get();
 client.getSession().get();
 client.disconnect().get();
@@ -262,7 +262,7 @@ DataValue value = client.readValue(0, TimestampsToReturn.Both, nodeId).get();
 
 **After (1.1.1):**
 ```java
-// Use blocking methods directly
+// Use blocking methods directly (can throw UaException)
 client.connect();
 Session session = client.getSession();
 client.disconnect();
@@ -1124,12 +1124,15 @@ This is especially important when upgrading from 0.6.x which allowed null status
 
 **Solution:** Create `OpcUaSubscription` directly:
 ```java
-// Old
+// Old - returned CompletableFuture
 client.getSubscriptionManager().createSubscription(1000.0).get();
 
-// New
+// New - blocking call (can throw UaException)
 var subscription = new OpcUaSubscription(client, 1000.0);
-subscription.create(); // or createAsync()
+subscription.create(); // blocking
+
+// Or use async
+subscription.createAsync(); // returns CompletableFuture<Void>
 ```
 
 #### 8. ExtensionObject Decode Issues
